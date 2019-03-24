@@ -81,6 +81,14 @@ To view information about the Sink delete command invoke help
 
     $ python sink.py delete -h
 
+#### List
+
+The list command list all contacts/friends from Google, Facebook and links between both.
+
+The Sink list command is invoked by the following command
+
+    $ python sink.py list [filename]
+
 ## Implementation Details
 
 #### Facebook
