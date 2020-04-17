@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import argparse
 import getpass
@@ -11,17 +11,24 @@ import re
 import shelve
 import socketserver
 import threading
+import time
 import urllib.parse
 import urllib.request
+import warnings
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait
+from datetime import datetime, timedelta
 
 import gdata.contacts.client
 import gdata.contacts.data
 import gdata.gauth
 import mechanicalsoup
 from fuzzywuzzy import fuzz, process
+
 from icu import Collator, Locale
+
+warnings.simplefilter('ignore', UserWarning)
+
 
 
 # Command descriptions
@@ -68,6 +75,8 @@ PORT = 7465
 SCORE_THRESHOLD = 100
 MATCH_LIMIT = 5
 RETRIES = 3
+DELAY = 0
+EXPIRY = 30
 COLLATOR = Collator.createInstance(Locale('pt_BR.UTF-8'))
 QTY_THREADS = multiprocessing.cpu_count() * 2 + 1
 
@@ -77,6 +86,7 @@ USERNAME = 'username'
 PASSWORD = 'password'
 LINKS = 'links'
 CHECKSUMS = 'checksums'
+TIMESTAMPS = 'timestamps'
 
 
 class Facebook:
@@ -95,7 +105,6 @@ class Facebook:
                 password = getpass.getpass("Facebook password: ")
             if self._login(username, password):
                 break
-            print("Login failed. Try again.")
             username = None
             password = None
         shelf[USERNAME] = username
@@ -120,29 +129,38 @@ class Facebook:
             remember_form = self.browser.select_form()
             remember_form.set('name_action_selected', 'dont_save')
             remember_form.choose_submit(None)
-            self.browser.submit_selected()
+            response = self.browser.submit_selected()
 
         if self._is_save_device():
             save_device_form = self.browser.select_form()
             save_device_form.choose_submit(None)
-            self.browser.submit_selected()
+            response = self.browser.submit_selected()
 
-        return self._is_home()
+        success = self._is_home()
 
-    def _is_path(self, path):
-        return urllib.parse.urlparse(self.browser.get_url()).path == path
+        if not success:
+            print("Login failed. Expected home page but path was %s." % self._get_path())
+            answer = input("Do you want to open a view of this page to provide a screenshot for debugging? [y/N]").lower()
+            if answer == "y" or answer == "yes":
+                self.browser.launch_browser()
+
+        return success
+
+    def _get_path(self):
+        return urllib.parse.urlparse(self.browser.get_url()).path
 
     def _is_home(self):
-        return self._is_path("/home.php")
+        path = self._get_path()
+        return path == "/" or path == "/home.php"
 
     def _is_checkpoint(self):
-        return self._is_path("/checkpoint/")
+        return self._get_path() == "/checkpoint/"
 
     def _is_login_checkpoint(self):
-        return self._is_path("/login/checkpoint/")
+        return self._get_path() == "/login/checkpoint/"
 
     def _is_save_device(self):
-        return self._is_path("/login/save-device/")
+        return self._get_path() == "/login/save-device/"
 
     def get_friends(self):
         friends = {}
@@ -154,20 +172,21 @@ class Facebook:
                 href = link.get('href')
                 delim = '&' if 'profile.php' in href else '?'
                 friends[href.split(delim)[0]] = link.contents[0]
-            page_links = self.browser.links(url_regex='.*friends\?unit_cursor.*')
+            page_links = self.browser.links(url_regex=r'.*friends\?unit_cursor.*')
             friends_path = page_links[0].get('href') if page_links else None
         friends = dict(sorted(friends.items(), key=lambda kv: (COLLATOR.getSortKey(kv[1]), kv[0])))
         return friends
 
-    def get_profile_picture(self, friend_url, friend):
+    def get_user_id(self, friend_url):
         profile_response = self.browser.open(self.base_url + friend_url)
-        user_id = re.search(self.user_id_regex, profile_response.text).group(1)
+        matcher = re.search(self.user_id_regex, profile_response.text)
+        if not matcher:
+            return None
+        return matcher.group(1)
+
+    def get_profile_picture(self, user_id):
         picture_response = self.browser.open(self.graph_api_picture % user_id)
-        try:
-            picture_data = json.loads(picture_response.text)['data']
-        except:
-            print(json.loads(picture_response.text))
-            raise
+        picture_data = json.loads(picture_response.text)['data']
         if picture_data['is_silhouette']:
             return None
         return urllib.request.urlretrieve(picture_data['url'])[0]
@@ -224,7 +243,7 @@ class GoogleContacts:
 
     def delete_photo(self, contact_url):
         contact = self.client.GetContact(contact_url)
-        self.client.DeletePhoto(contact)
+        self.client.DeletePhoto(media, contact)
 
     def update_website(self, contact_url, profile_url):
         contact = self.client.GetContact(contact_url)
@@ -265,14 +284,15 @@ class GoogleContacts:
 class Sink:
     def __init__(self, shelf):
         self.shelf = shelf
+        self.links = self.shelf[LINKS] if LINKS in shelf else {}
         self.checksums = self.shelf[CHECKSUMS] if CHECKSUMS in shelf else {}
+        self.timestamps = self.shelf[TIMESTAMPS] if TIMESTAMPS in shelf else {}
         print("Authorizing Google...")
         self.google = GoogleContacts(shelf)
         print("Getting Google contacts...")
         self.contacts = self.google.get_contacts()
         print("%d contacts" % len(self.contacts))
         print("Ordering matches...")
-        self.links = self.shelf[LINKS] if LINKS in shelf else {}
         self.links = dict(sorted(self.links.items(), key=lambda kv: (COLLATOR.getSortKey(self.contacts[kv[0]]), kv[1])))
         print("%d matches" % len([x for x in self.links.values() if x != None]))
         print("Authorizing Facebook...")
@@ -281,11 +301,11 @@ class Sink:
         self.friends = self.facebook.get_friends()
         print("%d friends" % len(self.friends))
 
-    def update(self, update_ignored=False, auto_only=False, score_threshold=SCORE_THRESHOLD, match_limit=MATCH_LIMIT, retries=RETRIES):
+    def update(self, update_ignored=False, auto_only=False, score_threshold=SCORE_THRESHOLD, match_limit=MATCH_LIMIT, retries=RETRIES, delay=DELAY, expiry=EXPIRY):
         self._update_links(update_ignored, auto_only, score_threshold, match_limit)
+        self._update_photos(retries, delay, expiry)
         # self._update_fullname()
-        self._update_websites()
-        self._update_photos(retries)
+        # self._update_websites()
 
     def edit(self, score_threshold=SCORE_THRESHOLD, match_limit=MATCH_LIMIT):
         self._edit_links(score_threshold, match_limit)
@@ -312,29 +332,43 @@ class Sink:
         print()
         print("Total: %d matched / %d google / %d facebook" % (len(matched), len(contacts), len(friends)))
 
-    def _update_photos(self, retries):
+    def _update_photos(self, retries, delay, expiry):
         print("Updating photos...")
         pool = ThreadPoolExecutor(QTY_THREADS)
-        [pool.submit(self._update_photo, contact_url, retries) for contact_url in self.links]
+        [pool.submit(self._update_photo, contact_url, retries, delay, expiry) for contact_url in self.links]
         pool.shutdown()
 
-    def _update_photo(self, contact_url, retries):
+    def _update_photo(self, contact_url, retries, delay, expiry):
         friend_url = self.links[contact_url]
-        if friend_url is not None:
-            picture = self.facebook.get_profile_picture(friend_url, self.friends[friend_url])
-            if picture is None:
-                # print("NO PICTURE: " + self.contacts[contact_url])
-                return
+
+        if not friend_url:
+            return
+
+        if not self._should_update(contact_url, expiry):
+            print("SKIPPED: " + self.contacts[contact_url])
+            return
+
+        user_id = self.facebook.get_user_id(friend_url)
+        if not user_id:
+            print("RATE LIMITED: " + self.contacts[contact_url])
+            return
+
+        picture = self.facebook.get_profile_picture(user_id)
+        if picture:
             picture_bytes = open(picture, 'rb').read()
             checksum = hashlib.md5(picture_bytes).hexdigest()
             if contact_url in self.checksums and self.checksums[contact_url] == checksum:
-                # print("UNCHANGED: " + self.contacts[contact_url])
-                return
+                print("UNCHANGED: " + self.contacts[contact_url])
             elif self._retry(lambda: self.google.update_photo(contact_url, picture), retries):
                 print("UPDATED: " + self.contacts[contact_url])
                 self._set_checksum(contact_url, checksum)
             else:
                 print("FAILED: " + self.contacts[contact_url])
+            self._set_timestamp(contact_url)
+        else:
+            print("NO PICTURE: " + self.contacts[contact_url])
+
+        time.sleep(delay)
 
     def _update_websites(self):
         print("Updating websites...")
@@ -372,6 +406,8 @@ class Sink:
                 del self.links[contact_url]
                 if contact_url in self.checksums:
                     del self.checksums[contact_url]
+                if contact_url in self.timestamps:
+                    del self.timestamps[contact_url]
 
     def _update_links(self, update_ignored, auto_only, score_threshold, match_limit):
         print("Updating links...")
@@ -385,8 +421,7 @@ class Sink:
                 else:
                     unlinks.append(contact_url)
         if not auto_only and unlinks:
-            print()
-            print(UPDATE_INSTRUCTIONS)
+            print("\n" + UPDATE_INSTRUCTIONS)
             for contact_url in unlinks:
                 print()
                 self._get_link(contact_url, score_threshold, match_limit, True)
@@ -394,10 +429,9 @@ class Sink:
     def _edit_links(self, score_threshold=SCORE_THRESHOLD, match_limit=MATCH_LIMIT):
         self._clean_links()
         link_contacts = {self.contacts[contact_url]: contact_url for contact_url in self.links}
-        print()
+        print("\n")
         print_columns(sorted(link_contacts.keys(), key=lambda kv: (COLLATOR.getSortKey(kv[0]), kv[1])))
-        print()
-        print(EDIT_INSTRUCTIONS)
+        print("\n" + EDIT_INSTRUCTIONS)
         while(True):
             print()
             name = input("Name: ")
@@ -459,6 +493,11 @@ class Sink:
     def _get_match(self, name):
         return process.extractOne(name, self.friends, scorer=fuzz.UWRatio, score_cutoff=100)
 
+    def _should_update(self, contact_url, expiry):
+        if contact_url not in self.timestamps:
+            return True
+        return datetime.now() > self.timestamps[contact_url] + timedelta(days=expiry)
+
     def _retry(self, func, retries):
         for retry in range(retries):
             try:
@@ -470,10 +509,11 @@ class Sink:
 
     def _set_checksum(self, contact_url, checksum):
         self.checksums[contact_url] = checksum
-        self._save_checksums()
-
-    def _save_checksums(self):
         self.shelf[CHECKSUMS] = self.checksums
+
+    def _set_timestamp(self, contact_url):
+        self.timestamps[contact_url] = datetime.now()
+        self.shelf[TIMESTAMPS] = self.timestamps
 
 
 def main():
@@ -481,14 +521,13 @@ def main():
     shelf = shelve.open(args.filename)
     sink = Sink(shelf)
     if args.command == 'update':
-        sink.update(args.update_ignored, args.auto_only, args.score_threshold, args.match_limit, args.retries)
+        sink.update(args.update_ignored, args.auto_only, args.score_threshold, args.match_limit, args.retries, args.delay, args.expiry)
     elif args.command == 'edit':
         sink.edit(args.score_threshold, args.match_limit)
     elif args.command == 'delete':
-        sink.delete(args.delete_links, args.retries)
+        sink.delete_photos(args.delete_links, args.retries)
     elif args.command == 'list':
         sink.list()
-
 
 def parse_args():
     parser = argparse.ArgumentParser(prog='sink', description=DESCRIPTION, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -505,16 +544,18 @@ def parse_args():
     param_parser.add_argument('-m', '--matches', dest='match_limit', metavar='MATCHES', default=MATCH_LIMIT, type=int, help='number of matches to show when searching contacts')
     retry_parser = argparse.ArgumentParser(add_help=False)
     retry_parser.add_argument('-r', '--retries', dest='retries', metavar='RETRIES', default=RETRIES, type=int, help='number of times to retry updating photos before failing')
-    subparsers.add_parser('update', parents=[file_parser, update_parser, param_parser, retry_parser], description=UDPATE_DESCRIPTION, help='update contact photos', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    subparsers.add_parser('edit', parents=[file_parser, param_parser], description=EDIT_DESCRIPTION, help='edit contact links', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    subparsers.add_parser('delete', parents=[file_parser, delete_parser, retry_parser], description=DELETE_DESCRIPTION, help='delete contact photos', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    subparsers.add_parser('list', parents=[file_parser], description=LIST_DESCRIPTION, help='list all contacts and friends', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    delay_parser = argparse.ArgumentParser(add_help=False)
+    delay_parser.add_argument('-d', '--delay', dest='delay', metavar='DELAY', default=DELAY, type=int, help='number of seconds to wait between contacts when updating photos')
+    expiry_parser = argparse.ArgumentParser(add_help=False)
+    delay_parser.add_argument('-e', '--expiry', dest='expiry', metavar='EXPIRY', default=EXPIRY, type=int, help='number of days a photo is considered current and should not be updated')
+    update = subparsers.add_parser('update', parents=[file_parser, update_parser, param_parser, retry_parser, delay_parser, expiry_parser], description=UDPATE_DESCRIPTION, help='update contact photos', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    edit = subparsers.add_parser('edit', parents=[file_parser, param_parser], description=EDIT_DESCRIPTION, help='edit contact links', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    delete = subparsers.add_parser('delete', parents=[file_parser, delete_parser, retry_parser], description=DELETE_DESCRIPTION, help='delete contact photos', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    list = subparsers.add_parser('list', parents=[file_parser], description=LIST_DESCRIPTION, help='list all contacts and friends', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     return parser.parse_args()
-
 
 def filename(filename):
     return os.path.splitext(filename)[0]
-
 
 def score(score):
     score = int(score)
@@ -522,11 +563,9 @@ def score(score):
         raise argparse.ArgumentTypeError("Score must be between 0 and 100")
     return score
 
-
 def print_columns(lst):
     for a, b, c in zip(lst[::3], lst[1::3], lst[2::3]):
         print('{:<50}{:<50}{:<}'.format(a, b, c))
-
 
 if __name__ == "__main__":
     main()

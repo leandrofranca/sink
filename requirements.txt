@@ -1,4 +1,5 @@
 fuzzywuzzy==0.17.0
 mechanicalsoup==0.11.0
 git+https://github.com/dvska/gdata-python3#egg=gdata
-PyICU==2.2
+PyICU==2.4.3
+python-Levenshtein==0.12.0
