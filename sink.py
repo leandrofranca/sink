@@ -304,8 +304,8 @@ class Sink:
     def update(self, update_ignored=False, auto_only=False, score_threshold=SCORE_THRESHOLD, match_limit=MATCH_LIMIT, retries=RETRIES, delay=DELAY, expiry=EXPIRY):
         self._update_links(update_ignored, auto_only, score_threshold, match_limit)
         self._update_photos(retries, delay, expiry)
-        # self._update_fullname()
-        # self._update_websites()
+        self._update_fullname()
+        self._update_websites()
 
     def edit(self, score_threshold=SCORE_THRESHOLD, match_limit=MATCH_LIMIT):
         self._edit_links(score_threshold, match_limit)
@@ -467,7 +467,7 @@ class Sink:
                 self._add_link(contact_url, matches[0][2])
                 return
             for i, (name, score, friend_url) in enumerate(matches):
-                print("  %d. %s (%d)" % (i + 1, name, score))
+                print("  %d. %s (%d) >> %s" % (i + 1, name, score, friend_url))
             while(True):
                 command = input("> ")
                 if not command.isdigit() or (int(command) > 0 and int(command) <= match_limit):
