@@ -9,14 +9,13 @@ import multiprocessing
 import os
 import re
 import shelve
-import socketserver
 import threading
 import time
 import urllib.parse
 import urllib.request
 import warnings
 import webbrowser
-from concurrent.futures import ThreadPoolExecutor, as_completed, wait
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
 import gdata.contacts.client
@@ -24,7 +23,6 @@ import gdata.contacts.data
 import gdata.gauth
 import mechanicalsoup
 from fuzzywuzzy import fuzz, process
-
 from icu import Collator, Locale
 
 warnings.simplefilter('ignore', UserWarning)
