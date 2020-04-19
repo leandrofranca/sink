@@ -27,10 +27,6 @@ import mechanicalsoup
 from fuzzywuzzy import fuzz, process
 from icu import Collator, Locale
 
-warnings.simplefilter('ignore', UserWarning)
-
-
-
 # Command descriptions
 DESCRIPTION = '''\
 Sink is a utility that uses Facebook profile pictures to provide high resolution photos for your Google contacts. \
@@ -542,7 +538,7 @@ def main():
     elif args.command == 'edit':
         sink.edit(args.score_threshold, args.match_limit)
     elif args.command == 'delete':
-        sink.delete_photos(args.delete_links, args.retries)
+        sink.delete(args.delete_links, args.retries)
 
 def parse_args():
     parser = argparse.ArgumentParser(prog='sink', description=DESCRIPTION, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
