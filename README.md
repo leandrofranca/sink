@@ -2,6 +2,12 @@
 
 Sink is a utility that uses Facebook profile pictures to provide high resolution photos for your Google contacts. Sink links each of your Google contacts with their Facebook profile and stores those links to allow for quick updates.
 
+## Dependencies
+
+To install the required SO dependencies, run the following command.  This only needs to be done once.
+
+    $ sudo pacman -S python-pyicu tk
+
 ## Installation
 
 To install the required dependencies, run the following command.  This only needs to be done once.
