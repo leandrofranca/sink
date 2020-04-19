@@ -9,6 +9,8 @@ import multiprocessing
 import os
 import re
 import shelve
+import socketserver
+import sys
 import threading
 import time
 import urllib.parse
@@ -219,6 +221,14 @@ class GoogleContacts:
         token.get_access_token(server.code)
         return token
 
+    def get_groups(self):
+        groups = {}
+        feed = self.client.GetGroups()
+        for group in feed.entry:
+            groups[group.id.text] = group.title.text
+        groups = dict(sorted(groups.items(), key=lambda kv: (COLLATOR.getSortKey(kv[1]), kv[0])))
+        return groups
+
     def get_contacts(self):
         contacts = {}
         query = gdata.contacts.client.ContactsQuery(max_results=25000)
@@ -233,6 +243,20 @@ class GoogleContacts:
                 contacts[contact.id.text.replace('base', 'full')] = contact.name.full_name.text
         contacts = dict(sorted(contacts.items(), key=lambda kv: (COLLATOR.getSortKey(kv[1]), kv[0])))
         return contacts
+
+    def get_group_membership(self):
+        group_membership = {}
+        query = gdata.contacts.client.ContactsQuery(max_results=25000)
+        feed = self.client.GetGroups()
+        for group in feed.entry:
+            if group.system_group and group.system_group.id == 'Contacts':
+                query.group = group.id.text
+                break
+        feed = self.client.GetContacts(q=query)
+        for contact in feed.entry:
+            if contact.name and contact.name.full_name:
+                group_membership[contact.id.text.replace('base', 'full')] = [group_membership.href for group_membership in contact.group_membership_info]
+        return group_membership
 
     def update_photo(self, contact_url, picture):
         contact = self.client.GetContact(contact_url)
@@ -287,6 +311,10 @@ class Sink:
         self.timestamps = self.shelf[TIMESTAMPS] if TIMESTAMPS in shelf else {}
         print("Authorizing Google...")
         self.google = GoogleContacts(shelf)
+        print("Getting Google groups...")
+        self.groups = self.google.get_groups()
+        print("Getting Google group membership...")
+        self.group_membership = self.google.get_group_membership()
         print("Getting Google contacts...")
         self.contacts = self.google.get_contacts()
         print("%d contacts" % len(self.contacts))
@@ -302,8 +330,8 @@ class Sink:
     def update(self, update_ignored=False, auto_only=False, score_threshold=SCORE_THRESHOLD, match_limit=MATCH_LIMIT, retries=RETRIES, delay=DELAY, expiry=EXPIRY):
         self._update_links(update_ignored, auto_only, score_threshold, match_limit)
         self._update_photos(retries, delay, expiry)
-        self._update_fullname()
-        self._update_websites()
+        # self._update_fullname()
+        # self._update_websites()
 
     def edit(self, score_threshold=SCORE_THRESHOLD, match_limit=MATCH_LIMIT):
         self._edit_links(score_threshold, match_limit)
@@ -313,22 +341,16 @@ class Sink:
         if delete_links:
             self._delete_links()
 
-    def list(self):
-        print("Listing contacts...")
-        print()
-        print("Matched (Google <-> Facebook):")
-        matched = [self._get_match(contact)[0] for k, contact in self.contacts.items() if self._get_match(contact)]
-        print_columns(matched)
-        print()
-        print("Google:")
-        contacts = list(self.contacts.values())
-        print_columns(contacts)
-        print()
-        print("Facebook:")
-        friends = list(self.friends.values())
-        print_columns(friends)
-        print()
-        print("Total: %d matched / %d google / %d facebook" % (len(matched), len(contacts), len(friends)))
+    def list_contact_by_group(self, group):
+        print("Listing contact from group " + group + "...")
+        for id, groups in filter(lambda x: self._get_group_by_name(group) in x[1], self.group_membership.items()):
+            print(self.contacts[id])
+
+    def _get_group_by_name(self, name):
+        for id, group in self.groups.items():
+            if group == name:
+                return id
+        return None
 
     def _update_photos(self, retries, delay, expiry):
         print("Updating photos...")
@@ -488,9 +510,6 @@ class Sink:
     def _get_matches(self, name, match_limit):
         return process.extract(name, self.friends, scorer=fuzz.UWRatio, limit=match_limit)
 
-    def _get_match(self, name):
-        return process.extractOne(name, self.friends, scorer=fuzz.UWRatio, score_cutoff=100)
-
     def _should_update(self, contact_url, expiry):
         if contact_url not in self.timestamps:
             return True
@@ -524,8 +543,6 @@ def main():
         sink.edit(args.score_threshold, args.match_limit)
     elif args.command == 'delete':
         sink.delete_photos(args.delete_links, args.retries)
-    elif args.command == 'list':
-        sink.list()
 
 def parse_args():
     parser = argparse.ArgumentParser(prog='sink', description=DESCRIPTION, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -549,7 +566,6 @@ def parse_args():
     update = subparsers.add_parser('update', parents=[file_parser, update_parser, param_parser, retry_parser, delay_parser, expiry_parser], description=UDPATE_DESCRIPTION, help='update contact photos', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     edit = subparsers.add_parser('edit', parents=[file_parser, param_parser], description=EDIT_DESCRIPTION, help='edit contact links', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     delete = subparsers.add_parser('delete', parents=[file_parser, delete_parser, retry_parser], description=DELETE_DESCRIPTION, help='delete contact photos', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    list = subparsers.add_parser('list', parents=[file_parser], description=LIST_DESCRIPTION, help='list all contacts and friends', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     return parser.parse_args()
 
 def filename(filename):
