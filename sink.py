@@ -337,10 +337,8 @@ class Sink:
         if delete_links:
             self._delete_links()
 
-    def list_contact_by_group(self, group):
-        print("Listing contact from group " + group + "...")
-        for id, groups in filter(lambda x: self._get_group_by_name(group) in x[1], self.group_membership.items()):
-            print(self.contacts[id])
+    def _get_contact_by_group(self, group):
+        return filter(lambda x: self._get_group_by_name(group) in x[1], self.group_membership.items())
 
     def _get_group_by_name(self, name):
         for id, group in self.groups.items():
