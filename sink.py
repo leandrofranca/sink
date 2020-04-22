@@ -391,7 +391,8 @@ class Sink:
 
         picture = self.facebook.get_profile_picture(user_id)
         if picture:
-            picture_bytes = open(picture, 'rb').read()
+            with open(picture, 'rb') as p:
+                picture_bytes = p.read()
             checksum = hashlib.md5(picture_bytes).hexdigest()
             if contact_url in self.checksums and self.checksums[contact_url] == checksum:
                 print("UNCHANGED: " + self.contacts[contact_url])
