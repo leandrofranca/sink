@@ -349,7 +349,13 @@ class Sink:
     def _update_photos(self, retries, delay, expiry):
         print("Updating photos...")
         pool = ThreadPoolExecutor(QTY_THREADS)
-        [pool.submit(self._update_photo, contact_url, retries, delay, expiry) for contact_url in self.links]
+        for contact_url in self.links:
+            future = pool.submit(self._update_photo, contact_url, retries, delay, expiry)
+            try:
+                future.result()
+            except StopIteration as cause:
+                print(cause)
+                break
         pool.shutdown()
 
     def _update_photo(self, contact_url, retries, delay, expiry):
@@ -364,8 +370,7 @@ class Sink:
 
         user_id = self.facebook.get_user_id(friend_url)
         if not user_id:
-            print("RATE LIMITED: " + self.contacts[contact_url])
-            return
+            raise StopIteration("RATE LIMITED: " + self.contacts[contact_url])
 
         picture = self.facebook.get_profile_picture(user_id)
         if picture:
