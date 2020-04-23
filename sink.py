@@ -327,9 +327,6 @@ class Sink:
         print("Getting Google contacts...")
         self.contacts = self.google.get_contacts()
         print("%d contacts" % len(self.contacts))
-        print("Ordering matches...")
-        self.links = dict(sorted(self.links.items(), key=lambda kv: (
-            COLLATOR.getSortKey(self.contacts[kv[0]]), kv[1])))
         print("%d matches" %
               len([x for x in self.links.values() if x != None]))
         print("Authorizing Facebook...")
