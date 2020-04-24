@@ -273,7 +273,7 @@ class GoogleContacts:
 
     def delete_photo(self, contact_url):
         contact = self.client.GetContact(contact_url)
-        self.client.DeletePhoto(media, contact)
+        self.client.DeletePhoto(contact)
 
     def update_website(self, contact_url, profile_url):
         contact = self.client.GetContact(contact_url)
